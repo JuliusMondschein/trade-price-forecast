@@ -1,1 +1,504 @@
+# Stock Price Forecasting
+Julius Mondschein
 
+# Purpose:
+
+Stock price prediction using historical data, I develop a predictive
+model to forecast the stock prices based on the historical market data.
+Based on the historical trends of the high, low, open, close and volume
+of a stock and its historical volatility and moving averages, we attempt
+to find out the patterns in the historical trends of a stock in order to
+predict the future trends in the stock. Using the machine learning
+techniques, we attempt to predict the accuracy of the model based on the
+historical data provided and we try to predict the accuracy of our model
+in terms of forecasting the next day’s closing price of the stock and
+give a comprehensive view about the model that we have developed.
+
+# Alpaca Market API, Stock Prediction
+
+``` python
+import os 
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from datetime import datetime
+
+from alpaca.data.historical import StockHistoricalDataClient
+from alpaca.data.requests import StockBarsRequest
+from alpaca.data.timeframe import TimeFrame
+from sklearn.metrics import mean_absolute_error
+
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_squared_error
+```
+
+``` python
+SYMBOL = "AAPL"
+START_DATE = "2023-01-01"
+END_DATE = datetime.today().strftime("%Y-%m-%d")
+client = StockHistoricalDataClient("PKMHUX5TXYAFWCSX6GTZC3NLEL",  "5mDe8bx2qEx2AQ7p7PxkKicewWYi1YG5Px1h6sR8xGXs")
+
+request_params = StockBarsRequest(
+    symbol_or_symbols=SYMBOL,
+    start=START_DATE,
+    end=END_DATE,
+    timeframe=TimeFrame.Day
+)
+
+bars = client.get_stock_bars(request_params)
+df = bars.df.reset_index()
+
+df = df[["timestamp", "open", "high", "low", "close", "volume"]]
+
+df["returns"] = df["close"].pct_change()
+df["volatility"] = df["returns"].rolling(window=5).std()
+df["ma_5"] = df["close"].rolling(window=5).mean()
+df["ma_10"] = df["close"].rolling(window=10).mean()
+df["ma_20"] = df["close"].rolling(window=20).mean()
+
+df["target"] = df["close"].shift(-1)
+df = df.dropna()
+
+features = ["close", "volume", "volatility", "ma_5", "ma_10", "ma_20"]
+
+X = df[features]
+y = df["target"]
+
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+model = RandomForestRegressor(n_estimators=300, max_depth=10, random_state=42)
+model.fit(X_train, y_train)
+
+y_pred = model.predict(X_test)
+mae = mean_absolute_error(y_test, y_pred)
+print(f"Mean Absolute Error: ${mae:.2f}")
+```
+
+    Mean Absolute Error: $2.86
+
+What does mean absolute error (MAE) indicate? Mean Absolute Error (MAE)
+represents the average absolute difference between the model’s predicted
+values and the actual values. In this case, an MAE of \$2.40 means that
+the model’s predictions are, on average, \$2.40 away from the true
+next-day stock price. Since MAE is measured in the same units as the
+target variable (dollars), it is easy to interpret. A lower MAE
+indicates better predictive accuracy.
+
+``` python
+plt.figure(figsize=(12, 6))
+plt.plot(y_test.values, label="Actual Price")
+plt.plot(y_pred, label="Predicted Price")
+plt.title("Actual vs Predicted Prices")
+plt.xlabel("Time")
+plt.ylabel("Price")
+plt.legend()
+plt.show()
+
+latest_data = X.iloc[-1:].values
+latest_prediction = model.predict(latest_data)[0]
+print(f"Next Dayn Price For Apple: ${latest_prediction:.2f}")
+```
+
+![](readme_files/figure-commonmark/cell-4-output-1.png)
+
+    Next Dayn Price For Apple: $264.50
+
+    /Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/site-packages/sklearn/utils/validation.py:2691: UserWarning: X does not have valid feature names, but RandomForestRegressor was fitted with feature names
+      warnings.warn(
+
+The plot displays the out-of-sample actual test prices y test vs. the
+predicted Random Forest values y pred. Essentially, the predicted series
+moves in the same direction, with similar local structure and short term
+horizon volatility, as the actual price of the test sample. Therefore,
+the model does a good job at modeling highly non-linear relationships
+between variables such as past price, trading volume, measures of
+volatility and the moving average.
+
+There are small residual deviations at certain peaks and troughs, which
+is a common behaviour for tree based ensemble models. The price
+smoothing seen in the RF regressor is due to the averaging over the many
+decision trees, which can tend to average out or dampen outliers. This
+tends to eliminate sharp price spikes or drops. Apart from the
+deviations at peaks and troughs, the RF alignment looks to have low bias
+and appropriate control of variance, especially with max_depth set to 10
+in order to limit overfitting.
+
+Again, the low MAE supports the fact that the errors are small in
+magnitude on average. Finally, using the latest feature vector we can
+generate a next-day forecast of \$273.30.
+
+# Prophet API Stock Prediction
+
+Time series forecasting with the Prophet model After demonstrating the
+Random Forest approach to forecasting after engineering a range of
+time-related features, we will also demonstrate an approach using the
+Prophet model, which is a type of time-series forecasting model. The
+Random Forest model relied on engineered features such as moving
+averages and volatility, but in this case we will use the Prophet model
+to model the time directly, by decomposing the time series into trend
+and seasonal components.
+
+``` python
+from prophet import Prophet
+import matplotlib.pyplot as plt
+import pandas as pd
+
+
+price_data = df[["timestamp", "close"]].copy()
+price_data = price_data.rename(columns={"timestamp": "ds", "close": "y"})
+price_data["ds"] = pd.to_datetime(price_data["ds"]).dt.tz_localize(None)
+```
+
+    Importing plotly failed. Interactive plots will not work.
+
+``` python
+m = Prophet(
+    daily_seasonality=False,
+    weekly_seasonality=True,
+    yearly_seasonality=True,
+    changepoint_prior_scale=0.05
+)
+m.fit(price_data)
+
+
+future = m.make_future_dataframe(periods=30)
+forecast = m.predict(future)
+
+
+tomorrow = forecast[forecast["ds"] > price_data["ds"].max()].iloc[0]
+tomorrow_date = tomorrow["ds"].strftime("%Y-%m-%d")
+tomorrow_price = tomorrow["yhat"]
+```
+
+    21:31:59 - cmdstanpy - INFO - Chain [1] start processing
+    21:31:59 - cmdstanpy - INFO - Chain [1] done processing
+
+``` python
+fig, ax = plt.subplots(figsize=(14, 6))
+
+ax.plot(price_data["ds"], price_data["y"], color="steelblue", linewidth=2, label="Actual Price")
+
+future_only = forecast[forecast["ds"] > price_data["ds"].max()]
+ax.plot(future_only["ds"], future_only["yhat"], color="red", label="Forecast")
+ax.fill_between(future_only["ds"], future_only["yhat_lower"], future_only["yhat_upper"],
+                color="red", alpha=0.15, label="Uncertainty Range")
+
+ax.scatter(tomorrow["ds"], tomorrow_price, color="red", s=120, zorder=5)
+ax.annotate(f"${tomorrow_price:.2f}", xy=(tomorrow["ds"], tomorrow_price),
+            xytext=(10, 10), textcoords="offset points",
+            fontsize=12, color="red", fontweight="bold")
+
+ax.set_title(f"{SYMBOL} Price Forecast — {tomorrow_date}", fontsize=14)
+ax.set_xlabel("Date")
+ax.set_ylabel("Price (USD)")
+ax.legend()
+ax.grid(True, alpha=0.3)
+plt.tight_layout()
+plt.show()
+```
+
+![](readme_files/figure-commonmark/cell-7-output-1.png)
+
+Weekly and yearly seasonality are included in the model, while daily
+seasonality is excluded. The changepoint_prior_scale parameter is set to
+0.05 to prevent overfitting, or excessive changes in the trend.
+
+``` python
+print(f"Predicted close for {tomorrow_date}: ${tomorrow_price:.2f}")
+print(f"Range: ${tomorrow['yhat_lower']:.2f} – ${tomorrow['yhat_upper']:.2f}")
+```
+
+    Predicted close for 2026-03-03: $262.59
+    Range: $254.44 – $270.55
+
+What does the forecast tell us? In Prophet, the actual predicted closed
+price and the lower and upper uncertainty bounds are captured in the
+point estimate, yhat, and in yhat_lower and yhat_upper variables.
+Therefore, for the 26th of February, 2026 the closing price forecast is
+\$265.17 with uncertainty (confidence level) in between of \$257.35 and
+\$272.74.
+
+The forecast visualization shows the historic prices along with the
+forecast and its confidence interval. The shaded area of the uncertainty
+band represents the range of forecast values, accounting for potential
+level shifts and seasonal components. Prophet provides a probabilistic
+and decomposed forecast accounting for temporal and seasonal components
+in the data.
+
+# Montecarlo Simulation
+
+This section implements a Monte Carlo simulation on top of the Prophet
+model to quantify forecast uncertainty beyond the built-in confidence
+intervals.
+
+Instead of relying on a single fitted model, the code runs 100
+simulations. In each iteration, Gaussian noise with a mean of 0 and a
+standard deviation of 1% is multiplicatively applied to the historical
+closing prices.
+
+``` python
+predictions = []
+for i in range(100):
+    noise = price_data.copy()
+    noise["y"] = noise["y"] * (1 + np.random.normal(0, 0.01, len(noise)))  
+    m_sim = Prophet(daily_seasonality=False, weekly_seasonality=True, yearly_seasonality=True)
+    m_sim.fit(noise)
+    fc_sim = m_sim.predict(m_sim.make_future_dataframe(periods=30))
+    predictions.append(fc_sim[fc_sim["ds"] > price_data["ds"].max()].iloc[0]["yhat"])
+
+print(f"Mean: ${np.mean(predictions):.2f}")
+print(f"Std Dev: ${np.std(predictions):.2f}")
+print(f"Range: ${np.min(predictions):.2f} – ${np.max(predictions):.2f}")
+```
+
+    21:32:00 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:00 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:00 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:00 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:00 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:00 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:00 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:00 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:00 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:00 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:00 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:00 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:00 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:01 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:01 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:01 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:01 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:01 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:01 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:01 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:01 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:01 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:01 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:01 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:01 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:01 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:01 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:02 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:02 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:02 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:02 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:02 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:02 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:02 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:02 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:02 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:02 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:02 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:02 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:02 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:02 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:03 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:03 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:03 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:03 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:03 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:03 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:03 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:03 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:03 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:03 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:03 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:03 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:03 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:03 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:04 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:04 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:04 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:04 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:04 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:04 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:04 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:04 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:04 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:04 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:04 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:04 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:04 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:05 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:05 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:05 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:05 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:05 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:05 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:05 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:05 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:05 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:05 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:05 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:05 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:05 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:06 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:06 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:06 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:06 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:06 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:06 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:06 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:06 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:06 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:06 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:06 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:06 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:06 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:07 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:07 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:07 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:07 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:07 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:07 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:07 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:07 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:07 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:07 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:07 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:07 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:07 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:08 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:08 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:08 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:08 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:08 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:08 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:08 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:08 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:08 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:08 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:08 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:08 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:09 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:09 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:09 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:09 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:09 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:09 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:09 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:09 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:09 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:09 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:09 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:09 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:10 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:10 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:10 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:10 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:10 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:10 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:10 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:10 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:10 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:10 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:10 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:10 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:11 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:11 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:11 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:11 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:11 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:11 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:11 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:11 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:11 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:11 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:11 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:11 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:11 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:12 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:12 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:12 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:12 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:12 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:12 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:12 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:12 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:12 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:12 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:12 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:12 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:12 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:13 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:13 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:13 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:13 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:13 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:13 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:13 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:13 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:13 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:13 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:13 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:13 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:13 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:14 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:14 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:14 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:14 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:14 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:14 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:14 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:14 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:14 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:14 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:14 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:15 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:15 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:15 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:15 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:15 - cmdstanpy - INFO - Chain [1] done processing
+    21:32:15 - cmdstanpy - INFO - Chain [1] start processing
+    21:32:15 - cmdstanpy - INFO - Chain [1] done processing
+
+    Mean: $263.56
+    Std Dev: $0.74
+    Range: $261.77 – $265.27
+
+``` python
+plt.figure(figsize=(10, 5))
+plt.hist(predictions, bins=30, color="steelblue", edgecolor="white")
+plt.axvline(np.mean(predictions), color="red", label=f"Mean: ${np.mean(predictions):.2f}")
+plt.title(f"{SYMBOL} — Monte Carlo Prediction Distribution (100 runs)")
+plt.xlabel("Predicted Price (USD)")
+plt.ylabel("Frequency")
+plt.legend()
+plt.tight_layout()
+plt.show()
+```
+
+![](readme_files/figure-commonmark/cell-10-output-1.png)
+
+A short recap of the distribution of our simulated forecasts: here is
+the histogram of our set of simulations with the corresponding red
+vertical line representing the mean. We observe that the standard
+deviation of this distribution is relatively low. This means that the
+model has a stable behaviour when we introduce small variations on the
+historical prices in the input data. In other words, the impact of small
+perturbations is not strong on the final forecast.
+
+This method is technically a “perturbation method” where we model
+parameter and data uncertainty by repeatedly refitting the model to
+stochastic variations of the data. The intuition is that this provides a
+more empirical, rather than theoretical, measure of the forecast
+uncertainty and in practice the analytical uncertainty of Prophet is
+often found not to be particularly reliable in this context.
+
+# Future Ideas
+
+1.  Experiment with different machine learning models (e.g., LSTM,
+    XGBoost) for stock price prediction.
+2.  Incorporate additional features such as news sentiment analysis,
+    social media trends, and macroeconomic indicators.
+3.  Implement a backtesting framework to evaluate the performance of the
+    trading strategy over historical data.
+4.  Explore the use of reinforcement learning for dynamic portfolio
+    management.
+5.  Investigate the impact of trading volume and order book data on
+    price movements.
+6.  Stress test the models under different market conditions to evaluate
+    robustness.
+7.  Stress test the models with extreme market events (e.g., flash
+    crashes, economic shocks) to assess their performance.
